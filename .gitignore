@@ -63,8 +63,8 @@ ENV/
 env.bak/
 venv.bak/
 
-# Streamlit
-.streamlit/
+# Streamlit — ignore real secrets but commit config and the example template
+.streamlit/secrets.toml
 
 # Models and data (since they might get big, but we want to commit initial ones)
 # We will explicitly add sample data, but ignore raw/processed general
