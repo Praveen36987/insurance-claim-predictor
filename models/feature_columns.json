@@ -1,0 +1,25 @@
+{
+    "required_columns": [
+        "policy_id",
+        "age",
+        "vehicle_age",
+        "vehicle_damage",
+        "annual_premium",
+        "policy_tenure",
+        "past_claims_count",
+        "credit_score"
+    ],
+    "categorical_columns": [
+        "vehicle_age",
+        "vehicle_damage"
+    ],
+    "numeric_columns": [
+        "age",
+        "annual_premium",
+        "policy_tenure",
+        "past_claims_count",
+        "credit_score"
+    ],
+    "id_column": "policy_id",
+    "target_column": "claim_status"
+}

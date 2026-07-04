@@ -1,0 +1,241 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from pathlib import Path
+import os
+import io
+
+from config import (
+    APP_TITLE, APP_SUBTITLE, 
+    COLOR_LOW_RISK, COLOR_MED_RISK, COLOR_HIGH_RISK, COLOR_PRIMARY,
+    MODEL_PATH, FEATURE_COLS_PATH
+)
+from src.data_loader import load_data
+from src.validator import validate_data
+from src.predict import load_pipeline, predict
+from src.explain import generate_local_explanation
+
+# Set page configuration
+st.set_page_config(
+    page_title="Claim Predictor",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for styling
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: white;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border: 1px solid #e0e0e0;
+        text-align: center;
+    }
+    .metric-value {
+        font-size: 2rem;
+        font-weight: 600;
+        color: #1f2937;
+    }
+    .metric-label {
+        font-size: 0.875rem;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .status-badge {
+        padding: 4px 12px;
+        border-radius: 9999px;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Application Header
+st.title(APP_TITLE)
+st.markdown(f"**{APP_SUBTITLE}**")
+st.divider()
+
+# Sidebar
+with st.sidebar:
+    st.header("Upload Data")
+    uploaded_file = st.file_uploader("Upload CSV or XLSX file", type=["csv", "xlsx"])
+    
+    st.markdown("---")
+    st.markdown("### Instructions")
+    st.markdown("1. Upload a valid dataset.")
+    st.markdown("2. Review validation results.")
+    st.markdown("3. Analyze risk distributions.")
+    st.markdown("4. Download the scored output.")
+    
+    st.markdown("---")
+    st.markdown("### Download Template")
+    sample_path = Path("data/sample/sample_insurance_data.csv")
+    if sample_path.exists():
+        with open(sample_path, "rb") as f:
+            st.download_button(
+                label="Download Sample CSV",
+                data=f,
+                file_name="sample_insurance_data.csv",
+                mime="text/csv"
+            )
+
+# Main Content
+if uploaded_file is not None:
+    # 1. Load Data
+    try:
+        df = load_data(uploaded_file)
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        st.stop()
+        
+    st.subheader("1. Data Preview & Validation")
+    with st.expander("View Raw Data", expanded=False):
+        st.dataframe(df.head(10), use_container_width=True)
+        
+    # 2. Validation
+    is_valid, errors = validate_data(df, FEATURE_COLS_PATH)
+    if not is_valid:
+        st.error("Data Validation Failed:")
+        for err in errors:
+            st.markdown(f"- {err}")
+        st.stop()
+    else:
+        st.success("✅ Data structure validated successfully.")
+        
+    # 3. Model Inference
+    st.divider()
+    st.subheader("2. Prediction & Risk Assessment")
+    
+    with st.spinner("Running inference pipeline..."):
+        try:
+            pipeline = load_pipeline(MODEL_PATH)
+            scored_df = predict(df, pipeline, FEATURE_COLS_PATH)
+        except Exception as e:
+            st.error(f"Prediction failed. Ensure the model has been trained. Error: {e}")
+            st.stop()
+            
+    # Calculate KPIs
+    total_records = len(scored_df)
+    high_risk_count = len(scored_df[scored_df['risk_band'] == 'High Risk'])
+    high_risk_pct = (high_risk_count / total_records) * 100
+    avg_probability = scored_df['predicted_probability'].mean() * 100
+    
+    # KPI Cards
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Total Records Processed</div>
+            <div class="metric-value">{total_records:,}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">High Risk Policies</div>
+            <div class="metric-value" style="color: {COLOR_HIGH_RISK};">{high_risk_count:,} ({high_risk_pct:.1f}%)</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Avg Claim Probability</div>
+            <div class="metric-value">{avg_probability:.1f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    st.write("") # spacing
+    
+    # 4. Charts & Distributions
+    st.subheader("3. Risk Distribution")
+    col_chart1, col_chart2 = st.columns(2)
+    
+    color_map = {
+        'Low Risk': COLOR_LOW_RISK,
+        'Medium Risk': COLOR_MED_RISK,
+        'High Risk': COLOR_HIGH_RISK
+    }
+    
+    with col_chart1:
+        fig_pie = px.pie(
+            scored_df, 
+            names='risk_band', 
+            color='risk_band',
+            color_discrete_map=color_map,
+            hole=0.4,
+            title="Distribution by Risk Band"
+        )
+        fig_pie.update_layout(plot_bgcolor='white', paper_bgcolor='white')
+        st.plotly_chart(fig_pie, use_container_width=True)
+        
+    with col_chart2:
+        fig_hist = px.histogram(
+            scored_df, 
+            x='predicted_probability',
+            color='risk_band',
+            color_discrete_map=color_map,
+            nbins=30,
+            title="Claim Probability Distribution",
+            labels={'predicted_probability': 'Probability of Claim'}
+        )
+        fig_hist.update_layout(plot_bgcolor='white', paper_bgcolor='white', bargap=0.1)
+        st.plotly_chart(fig_hist, use_container_width=True)
+        
+    # 5. Explanations & High Risk Records
+    st.divider()
+    st.subheader("4. High-Risk Action Items")
+    
+    high_risk_df = scored_df[scored_df['risk_band'] == 'High Risk'].sort_values(by='predicted_probability', ascending=False)
+    
+    if len(high_risk_df) > 0:
+        st.dataframe(
+            high_risk_df[['policy_id', 'predicted_probability', 'risk_band', 'age', 'vehicle_damage', 'past_claims_count']].head(10),
+            use_container_width=True
+        )
+        
+        st.markdown("#### Sample Risk Explanations")
+        for i in range(min(3, len(high_risk_df))):
+            row = high_risk_df.iloc[[i]]
+            explanation = generate_local_explanation(pipeline, row)
+            pol_id = row['policy_id'].values[0]
+            prob = row['predicted_probability'].values[0]
+            st.info(f"**Policy {pol_id}** (Prob: {prob:.2f}): {explanation}")
+    else:
+        st.info("No high-risk policies detected in this batch.")
+        
+    # 6. Output Download
+    st.divider()
+    st.subheader("5. Export Scored Data")
+    
+    csv_buffer = io.StringIO()
+    scored_df.to_csv(csv_buffer, index=False)
+    csv_data = csv_buffer.getvalue()
+    
+    st.download_button(
+        label="Download Scored Results (CSV)",
+        data=csv_data,
+        file_name="scored_predictions.csv",
+        mime="text/csv",
+        type="primary"
+    )
+
+else:
+    # Empty State
+    st.info("👈 Please upload a CSV or XLSX file from the sidebar to begin analysis.")
+    
+    # Placeholder layout for recruiter demo when no file is uploaded
+    st.markdown("""
+    ### Welcome to the Insurance Claim Predictor
+    This application predicts the probability that an insurance policyholder will file a claim, allowing underwriters to proactively manage portfolio risk.
+    
+    **How it works:**
+    1. Upload your historical or current policyholder batch data.
+    2. The app validates schema integrity.
+    3. Our ML pipeline scores each policy with a risk probability and bands it (Low/Medium/High).
+    4. View aggregated dashboards and download the output.
+    """)

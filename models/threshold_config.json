@@ -1,0 +1,11 @@
+{
+    "thresholds": {
+        "low": 0.30,
+        "medium": 0.70
+    },
+    "labels": {
+        "low": "Low Risk",
+        "medium": "Medium Risk",
+        "high": "High Risk"
+    }
+}
