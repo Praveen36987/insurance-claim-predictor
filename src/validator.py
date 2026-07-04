@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 from pathlib import Path
+import numpy as np
 
 # Common alternative names for each expected model feature.
 # The app tries these aliases to auto-map uploaded column names.
@@ -71,6 +72,81 @@ def auto_map_columns(df_columns: list[str]) -> dict[str, str | None]:
     return mapping
 
 
+def clean_mapped_values(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Standardizes data types and categories for the mapped columns
+    to ensure compatibility with the trained model.
+    """
+    df_clean = df.copy()
+
+    # 1. Clean Numeric Columns (convert and handle NaNs/outliers)
+    numeric_cols = {
+        "age": 40,
+        "annual_premium": 30000,
+        "policy_tenure": 24,
+        "past_claims_count": 0,
+        "credit_score": 650
+    }
+
+    for col, default in numeric_cols.items():
+        if col in df_clean.columns:
+            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+            # Fill missing/NaNs
+            median_val = df_clean[col].median()
+            fill_val = median_val if not pd.isna(median_val) else default
+            df_clean[col] = df_clean[col].fillna(fill_val)
+            
+            # Additional logical bounds
+            if col == "age":
+                df_clean[col] = df_clean[col].clip(18, 100)
+            elif col == "past_claims_count":
+                df_clean[col] = df_clean[col].clip(0, 50).round().astype(int)
+            elif col == "credit_score":
+                df_clean[col] = df_clean[col].clip(300, 850).round().astype(int)
+
+    # 2. Clean Categorical: vehicle_damage
+    if "vehicle_damage" in df_clean.columns:
+        def standardize_damage(val):
+            if pd.isna(val):
+                return "No"
+            s = str(val).strip().lower()
+            if s in ['yes', 'y', '1', 'true', 'damaged']:
+                return "Yes"
+            return "No"
+        df_clean["vehicle_damage"] = df_clean["vehicle_damage"].apply(standardize_damage)
+
+    # 3. Clean Categorical: vehicle_age
+    # Expected categories: "< 1 Year", "1-2 Year", "> 2 Years"
+    if "vehicle_age" in df_clean.columns:
+        def standardize_vehicle_age(val):
+            if pd.isna(val):
+                return "1-2 Year"
+            
+            # If it's numeric/float/int, map by value
+            try:
+                num = float(val)
+                if num < 1:
+                    return "< 1 Year"
+                elif num <= 2:
+                    return "1-2 Year"
+                else:
+                    return "> 2 Years"
+            except ValueError:
+                pass
+
+            s = str(val).strip().lower()
+            if any(x in s for x in ['<1', 'under 1', 'new', 'less than 1', '0 year']):
+                return "< 1 Year"
+            if any(x in s for x in ['1-2', '1 to 2', 'between 1', '1 year', '2 year']):
+                return "1-2 Year"
+            if any(x in s for x in ['>2', 'over 2', 'above 2', 'old', '2+', 'more than 2']):
+                return "> 2 Years"
+            return "1-2 Year"
+        df_clean["vehicle_age"] = df_clean["vehicle_age"].apply(standardize_vehicle_age)
+
+    return df_clean
+
+
 def apply_column_mapping(df: pd.DataFrame, mapping: dict[str, str | None]) -> pd.DataFrame:
     """
     Renames and selects columns in df according to a confirmed mapping.
@@ -85,8 +161,7 @@ def apply_column_mapping(df: pd.DataFrame, mapping: dict[str, str | None]) -> pd
         "age": 40,
         "vehicle_age": "1-2 Year",
         "vehicle_damage": "No",
-        "annual_premium": df_out.get("annual_premium", pd.Series([30000] * len(df_out))).median()
-            if "annual_premium" in df_out.columns else 30000,
+        "annual_premium": 30000,
         "policy_tenure": 24,
         "past_claims_count": 0,
         "credit_score": 650,
@@ -94,7 +169,13 @@ def apply_column_mapping(df: pd.DataFrame, mapping: dict[str, str | None]) -> pd
 
     for col, default in defaults.items():
         if col not in df_out.columns:
-            df_out[col] = default
+            if col == "policy_id":
+                df_out[col] = default
+            else:
+                df_out[col] = default
+
+    # Clean the values to ensure correct formats & bounds
+    df_out = clean_mapped_values(df_out)
 
     return df_out
 
